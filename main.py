@@ -1,5 +1,6 @@
 import os
 import json
+import random
 import torch
 import torchvision
 import torch.nn.parallel
@@ -29,13 +30,22 @@ def setup_multi_gpu():
         return num_gpus
     return 0
 
+def _seed_worker(worker_id):
+    s = torch.initial_seed() % 2**32
+    np.random.seed(s)
+    random.seed(s)
+
+
 def train_one_epoch(opt, model, train_dataset, optimizer, warmup=False):
     # Increase num_workers for multi-GPU setup
     num_workers = min(8, os.cpu_count())
+    g = torch.Generator()
+    g.manual_seed(opt['seed'] if opt.get('seed', -1) >= 0 else 0)
     train_loader = torch.utils.data.DataLoader(train_dataset,
                                                 batch_size=opt['batch_size'], shuffle=True,
                                                 num_workers=num_workers, pin_memory=True,
-                                                drop_last=False)      
+                                                drop_last=False,
+                                                worker_init_fn=_seed_worker, generator=g)
     epoch_cost = 0
     epoch_cost_cls = 0
     epoch_cost_reg = 0
@@ -646,11 +656,17 @@ if __name__ == '__main__':
     opt_file.close()
     
     if opt['seed'] >= 0:
-        seed = opt['seed'] 
-        torch.manual_seed(seed)
+        seed = opt['seed']
+        os.environ['PYTHONHASHSEED'] = str(seed)
+        os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
+        random.seed(seed)
         np.random.seed(seed)
+        torch.manual_seed(seed)
         # For reproducibility in multi-GPU training
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False
+        torch.use_deterministic_algorithms(True, warn_only=True)
            
     opt['anchors'] = [int(item) for item in opt['anchors'].split(',')]  
            
